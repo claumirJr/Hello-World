@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1e293b">
+<title>Bingo</title>
+<style>
+  :root{
+    --bg:#0f172a; --panel:#1e293b; --text:#f1f5f9; --muted:#94a3b8;
+    --accent:#facc15; --ok:#22c55e;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+       min-height:100vh;padding:0 16px 32px;max-width:900px;margin-inline:auto}
+  header{padding:16px 0 8px;display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+  h1{margin:0;font-size:1.5rem}
+  #counter{color:var(--muted);font-size:.9rem}
+  .row{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
+  button,label.btn{
+    appearance:none;border:0;border-radius:12px;padding:12px 16px;font:inherit;font-weight:600;
+    background:var(--panel);color:var(--text);cursor:pointer;flex:1 1 auto;text-align:center;
+    border:1px solid #334155;
+  }
+  button.primary,label.btn.primary{background:var(--accent);color:#1e1b00;border-color:var(--accent)}
+  button.active{outline:2px solid var(--accent)}
+  button:active,label.btn:active{transform:scale(.98)}
+  input[type=file]{display:none}
+  #stage{position:relative;margin-top:8px;border-radius:12px;overflow:hidden;background:#000;line-height:0;touch-action:manipulation}
+  #stage img{width:100%;height:auto;display:block;user-select:none;-webkit-user-drag:none}
+  #stage svg{position:absolute;inset:0;width:100%;height:100%}
+  .cell{fill:transparent;cursor:pointer}
+  .cell.on{fill:rgba(34,197,94,.42)}
+  .xmark{stroke:#166534;opacity:.8;stroke-linecap:round;fill:none;pointer-events:none}
+  .gridline{stroke:rgba(255,255,255,.9);fill:none;pointer-events:none}
+  .gridline.shadow{stroke:rgba(0,0,0,.6)}
+  .handle{fill:var(--accent);stroke:#000;cursor:grab;touch-action:none}
+  #hint{color:var(--muted);font-size:.85rem;margin:8px 2px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🎱 Bingo</h1>
+  <span id="counter"></span>
+</header>
+
+<div class="row">
+  <label class="btn primary" for="camInput">📷 Tirar foto</label>
+  <label class="btn" for="galInput">🖼️ Galeria</label>
+  <button id="sampleBtn">Cartela exemplo</button>
+</div>
+<input id="camInput" type="file" accept="image/*" capture="environment">
+<input id="galInput" type="file" accept="image/*">
+
+<div class="row">
+  <button id="modeMark" class="active">✖ Marcar números</button>
+  <button id="modeAdjust">⌗ Ajustar grade</button>
+  <button id="clearBtn">Limpar marcações</button>
+</div>
+
+<div id="stage">
+  <img id="img" alt="Cartela de bingo" draggable="false">
+  <svg id="svg"></svg>
+</div>
+<p id="hint"></p>
+
+<script>
+(() => {
+  const COLS = 9, ROWS = 3;
+  const SAMPLE_SRC = 'bingo-exemplo.jpg';
+
+  // Cartela de exemplo (foto 1536x1536): cantos da grade 3x9 e células já marcadas de verde
+  const SAMPLE_CORNERS = [[185,405],[1400,400],[1425,982],[172,985]]; // TL, TR, BR, BL
+  const SAMPLE_MARKS = [
+    // linha 1: 47 53 64 71 85
+    '0,4','0,5','0,6','0,7','0,8',
+    // linha 2: 09 22 33 86   (65 ficou sem marcar)
+    '1,0','1,2','1,3','1,8',
+    // linha 3: 04 14 20 38 54
+    '2,0','2,1','2,2','2,3','2,5'
+  ];
+
+  const $ = id => document.getElementById(id);
+  const img = $('img'), svg = $('svg');
+  const NS = 'http://www.w3.org/2000/svg';
+
+  let W = 1, H = 1;
+  let corners = [];
+  let marks = new Set();
+  let mode = 'mark';
+
+  const lerp = (a,b,t) => a + (b-a)*t;
+  function pt(u, v){ // u: 0..1 horizontal, v: 0..1 vertical (interpolação bilinear)
+    const [tl,tr,br,bl] = corners;
+    const top = [lerp(tl[0],tr[0],u), lerp(tl[1],tr[1],u)];
+    const bot = [lerp(bl[0],br[0],u), lerp(bl[1],br[1],u)];
+    return [lerp(top[0],bot[0],v), lerp(top[1],bot[1],v)];
+  }
+  const P = p => p[0].toFixed(1)+','+p[1].toFixed(1);
+
+  function el(name, attrs, parent){
+    const e = document.createElementNS(NS, name);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    parent && parent.appendChild(e);
+    return e;
+  }
+
+  function render(){
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svg.innerHTML = '';
+    const unit = W / 1536;
+
+    for (let r=0; r<ROWS; r++){
+      for (let c=0; c<COLS; c++){
+        const u0=c/COLS, u1=(c+1)/COLS, v0=r/ROWS, v1=(r+1)/ROWS;
+        const pts = [pt(u0,v0),pt(u1,v0),pt(u1,v1),pt(u0,v1)];
+        const key = r+','+c, on = marks.has(key);
+        const poly = el('polygon', {points: pts.map(P).join(' '), class:'cell'+(on?' on':''), 'data-key':key}, svg);
+        if (mode !== 'mark') poly.style.pointerEvents = 'none';
+        if (on){
+          // X dentro da célula (com recuo de 22%)
+          const a = pt(lerp(u0,u1,.22), lerp(v0,v1,.2)), b = pt(lerp(u0,u1,.78), lerp(v0,v1,.2));
+          const d = pt(lerp(u0,u1,.22), lerp(v0,v1,.8)), e = pt(lerp(u0,u1,.78), lerp(v0,v1,.8));
+          const sw = Math.max(4, 6*unit);
+          el('path', {d:`M${P(a)}L${P(e)}M${P(b)}L${P(d)}`, class:'xmark','stroke-width':sw}, svg);
+        }
+      }
+    }
+
+    if (mode === 'adjust'){
+      // linhas da grade
+      let d = '';
+      for (let c=0;c<=COLS;c++) d += `M${P(pt(c/COLS,0))}L${P(pt(c/COLS,1))}`;
+      for (let r=0;r<=ROWS;r++) d += `M${P(pt(0,r/ROWS))}L${P(pt(1,r/ROWS))}`;
+      el('path',{d, class:'gridline shadow','stroke-width':5*unit}, svg);
+      el('path',{d, class:'gridline','stroke-width':2.5*unit}, svg);
+      corners.forEach((p,i) => {
+        const h = el('circle',{cx:p[0],cy:p[1],r:30*unit,class:'handle','stroke-width':3*unit,'data-i':i}, svg);
+        h.addEventListener('pointerdown', startDrag);
+      });
+    }
+
+    const total = ROWS*COLS;
+    $('counter').textContent = marks.size ? `${marks.size} marcados` : '';
+    $('hint').textContent = mode === 'mark'
+      ? 'Toque em um número para marcar ou desmarcar.'
+      : 'Arraste as 4 bolinhas amarelas até os cantos da área dos números (3 linhas × 9 colunas) para alinhar a grade.';
+    $('modeMark').classList.toggle('active', mode==='mark');
+    $('modeAdjust').classList.toggle('active', mode==='adjust');
+  }
+
+  // toque nas células
+  svg.addEventListener('click', e => {
+    const key = e.target.getAttribute && e.target.getAttribute('data-key');
+    if (!key || mode !== 'mark') return;
+    marks.has(key) ? marks.delete(key) : marks.add(key);
+    render();
+    if (navigator.vibrate) navigator.vibrate(15);
+  });
+
+  // arrastar cantos
+  let dragIdx = null;
+  function toImg(ev){
+    const m = svg.getScreenCTM().inverse();
+    const p = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(m);
+    return [Math.min(W,Math.max(0,p.x)), Math.min(H,Math.max(0,p.y))];
+  }
+  function startDrag(ev){
+    dragIdx = +ev.target.getAttribute('data-i');
+    ev.preventDefault();
+  }
+  window.addEventListener('pointermove', ev => {
+    if (dragIdx === null) return;
+    corners[dragIdx] = toImg(ev);
+    render();
+  });
+  const endDrag = () => { dragIdx = null; };
+  window.addEventListener('pointerup', endDrag);
+  window.addEventListener('pointercancel', endDrag);
+
+  function setMode(m){ mode = m; render(); }
+  $('modeMark').onclick = () => setMode('mark');
+  $('modeAdjust').onclick = () => setMode('adjust');
+  $('clearBtn').onclick = () => {
+    if (!marks.size || confirm('Limpar todas as marcações?')){ marks = new Set(); render(); }
+  };
+
+  function ready(){
+    W = img.naturalWidth; H = img.naturalHeight;
+    render();
+  }
+
+  function loadSample(){
+    corners = SAMPLE_CORNERS.map(p => p.slice());
+    marks = new Set(SAMPLE_MARKS);
+    mode = 'mark';
+    img.onload = ready;
+    img.src = SAMPLE_SRC;
+    if (img.complete && img.naturalWidth) ready();
+  }
+
+  function loadFile(file){
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    const tmp = new Image();
+    tmp.onload = () => {
+      // reduz fotos grandes (e aplica a orientação da câmera) para ficar leve
+      const max = 1800, s = Math.min(1, max / Math.max(tmp.naturalWidth, tmp.naturalHeight));
+      const cv = document.createElement('canvas');
+      cv.width = Math.round(tmp.naturalWidth*s); cv.height = Math.round(tmp.naturalHeight*s);
+      cv.getContext('2d').drawImage(tmp, 0, 0, cv.width, cv.height);
+      URL.revokeObjectURL(url);
+      const w = cv.width, h = cv.height;
+      corners = [[w*.06,h*.3],[w*.94,h*.3],[w*.94,h*.7],[w*.06,h*.7]];
+      marks = new Set();
+      mode = 'adjust';
+      img.onload = ready;
+      img.src = cv.toDataURL('image/jpeg', .9);
+    };
+    tmp.onerror = () => { URL.revokeObjectURL(url); alert('Não foi possível abrir a imagem.'); };
+    tmp.src = url;
+  }
+
+  $('camInput').onchange = e => { loadFile(e.target.files[0]); e.target.value=''; };
+  $('galInput').onchange = e => { loadFile(e.target.files[0]); e.target.value=''; };
+  $('sampleBtn').onclick = loadSample;
+
+  loadSample();
+})();
+</script>
+</body>
+</html>
